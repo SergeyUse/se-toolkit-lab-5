@@ -1,90 +1,210 @@
-"""Router for analytics endpoints.
-
-Each endpoint performs SQL aggregation queries on the interaction data
-populated by the ETL pipeline. All endpoints require a `lab` query
-parameter to filter results by lab (e.g., "lab-01").
-"""
-
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlmodel import select, func
+from typing import List, Dict, Any
+from datetime import date
 
 from app.database import get_session
+from app.models.item import ItemRecord
+from app.models.interaction import InteractionLog
+from app.models.learner import Learner
 
 router = APIRouter()
 
-
 @router.get("/scores")
 async def get_scores(
-    lab: str = Query(..., description="Lab identifier, e.g. 'lab-01'"),
-    session: AsyncSession = Depends(get_session),
-):
-    """Score distribution histogram for a given lab.
-
-    TODO: Implement this endpoint.
-    - Find the lab item by matching title (e.g. "lab-04" → title contains "Lab 04")
-    - Find all tasks that belong to this lab (parent_id = lab.id)
-    - Query interactions for these items that have a score
-    - Group scores into buckets: "0-25", "26-50", "51-75", "76-100"
-      using CASE WHEN expressions
-    - Return a JSON array:
-      [{"bucket": "0-25", "count": 12}, {"bucket": "26-50", "count": 8}, ...]
-    - Always return all four buckets, even if count is 0
-    """
-    raise NotImplementedError
+    lab: str,
+    session: AsyncSession = Depends(get_session)
+) -> List[Dict[str, Any]]:
+    # 1. Найти lab по title (преобразуем lab-04 → Lab 04)
+    lab_title = lab.replace("-", " ").title()
+    lab_item = await session.execute(
+        select(ItemRecord).where(
+            ItemRecord.type == "lab",
+            ItemRecord.title.contains(lab_title)
+        )
+    )
+    lab_item = lab_item.scalar_one_or_none()
+    if not lab_item:
+        # Если lab не найдена, возвращаем пустые корзины
+        return [
+            {"bucket": "0-25", "count": 0},
+            {"bucket": "26-50", "count": 0},
+            {"bucket": "51-75", "count": 0},
+            {"bucket": "76-100", "count": 0}
+        ]
+    
+    # 2. Найти все task для этой lab
+    tasks = await session.execute(
+        select(ItemRecord).where(
+            ItemRecord.type == "task",
+            ItemRecord.parent_id == lab_item.id
+        )
+    )
+    task_ids = [t.id for t in tasks.scalars().all()]
+    
+    if not task_ids:
+        return [
+            {"bucket": "0-25", "count": 0},
+            {"bucket": "26-50", "count": 0},
+            {"bucket": "51-75", "count": 0},
+            {"bucket": "76-100", "count": 0}
+        ]
+    
+    # 3. Подсчет скора по корзинам
+    result = await session.execute(
+        select(
+            func.count().filter(InteractionLog.score <= 25).label("bucket1"),
+            func.count().filter(InteractionLog.score.between(26, 50)).label("bucket2"),
+            func.count().filter(InteractionLog.score.between(51, 75)).label("bucket3"),
+            func.count().filter(InteractionLog.score.between(76, 100)).label("bucket4")
+        ).where(
+            InteractionLog.item_id.in_(task_ids),
+            InteractionLog.score.isnot(None)
+        )
+    )
+    row = result.one()
+    
+    return [
+        {"bucket": "0-25", "count": row[0] or 0},
+        {"bucket": "26-50", "count": row[1] or 0},
+        {"bucket": "51-75", "count": row[2] or 0},
+        {"bucket": "76-100", "count": row[3] or 0}
+    ]
 
 
 @router.get("/pass-rates")
 async def get_pass_rates(
-    lab: str = Query(..., description="Lab identifier, e.g. 'lab-01'"),
-    session: AsyncSession = Depends(get_session),
-):
-    """Per-task pass rates for a given lab.
-
-    TODO: Implement this endpoint.
-    - Find the lab item and its child task items
-    - For each task, compute:
-      - avg_score: average of interaction scores (round to 1 decimal)
-      - attempts: total number of interactions
-    - Return a JSON array:
-      [{"task": "Repository Setup", "avg_score": 92.3, "attempts": 150}, ...]
-    - Order by task title
-    """
-    raise NotImplementedError
+    lab: str,
+    session: AsyncSession = Depends(get_session)
+) -> List[Dict[str, Any]]:
+    # Найти lab
+    lab_title = lab.replace("-", " ").title()
+    lab_item = await session.execute(
+        select(ItemRecord).where(
+            ItemRecord.type == "lab",
+            ItemRecord.title.contains(lab_title)
+        )
+    )
+    lab_item = lab_item.scalar_one_or_none()
+    if not lab_item:
+        return []
+    
+    # Найти все task с агрегацией
+    result = await session.execute(
+        select(
+            ItemRecord.title,
+            func.round(func.avg(InteractionLog.score), 1).label("avg_score"),
+            func.count(InteractionLog.id).label("attempts")
+        )
+        .join(InteractionLog, InteractionLog.item_id == ItemRecord.id)
+        .where(
+            ItemRecord.type == "task",
+            ItemRecord.parent_id == lab_item.id,
+            InteractionLog.score.isnot(None)
+        )
+        .group_by(ItemRecord.id, ItemRecord.title)
+        .order_by(ItemRecord.title)
+    )
+    
+    return [
+        {"task": title, "avg_score": float(avg), "attempts": attempts}
+        for title, avg, attempts in result.all()
+    ]
 
 
 @router.get("/timeline")
 async def get_timeline(
-    lab: str = Query(..., description="Lab identifier, e.g. 'lab-01'"),
-    session: AsyncSession = Depends(get_session),
-):
-    """Submissions per day for a given lab.
-
-    TODO: Implement this endpoint.
-    - Find the lab item and its child task items
-    - Group interactions by date (use func.date(created_at))
-    - Count the number of submissions per day
-    - Return a JSON array:
-      [{"date": "2026-02-28", "submissions": 45}, ...]
-    - Order by date ascending
-    """
-    raise NotImplementedError
+    lab: str,
+    session: AsyncSession = Depends(get_session)
+) -> List[Dict[str, Any]]:
+    # Найти lab
+    lab_title = lab.replace("-", " ").title()
+    lab_item = await session.execute(
+        select(ItemRecord).where(
+            ItemRecord.type == "lab",
+            ItemRecord.title.contains(lab_title)
+        )
+    )
+    lab_item = lab_item.scalar_one_or_none()
+    if not lab_item:
+        return []
+    
+    # Найти все task для этой lab
+    tasks = await session.execute(
+        select(ItemRecord).where(
+            ItemRecord.type == "task",
+            ItemRecord.parent_id == lab_item.id
+        )
+    )
+    task_ids = [t.id for t in tasks.scalars().all()]
+    
+    if not task_ids:
+        return []
+    
+    # Группировка по дате
+    result = await session.execute(
+        select(
+            func.date(InteractionLog.created_at).label("date"),
+            func.count().label("submissions")
+        )
+        .where(InteractionLog.item_id.in_(task_ids))
+        .group_by(func.date(InteractionLog.created_at))
+        .order_by("date")
+    )
+    
+    return [
+        {"date": str(date), "submissions": count}
+        for date, count in result.all()
+    ]
 
 
 @router.get("/groups")
 async def get_groups(
-    lab: str = Query(..., description="Lab identifier, e.g. 'lab-01'"),
-    session: AsyncSession = Depends(get_session),
-):
-    """Per-group performance for a given lab.
-
-    TODO: Implement this endpoint.
-    - Find the lab item and its child task items
-    - Join interactions with learners to get student_group
-    - For each group, compute:
-      - avg_score: average score (round to 1 decimal)
-      - students: count of distinct learners
-    - Return a JSON array:
-      [{"group": "B23-CS-01", "avg_score": 78.5, "students": 25}, ...]
-    - Order by group name
-    """
-    raise NotImplementedError
+    lab: str,
+    session: AsyncSession = Depends(get_session)
+) -> List[Dict[str, Any]]:
+    # Найти lab
+    lab_title = lab.replace("-", " ").title()
+    lab_item = await session.execute(
+        select(ItemRecord).where(
+            ItemRecord.type == "lab",
+            ItemRecord.title.contains(lab_title)
+        )
+    )
+    lab_item = lab_item.scalar_one_or_none()
+    if not lab_item:
+        return []
+    
+    # Найти все task для этой lab
+    tasks = await session.execute(
+        select(ItemRecord).where(
+            ItemRecord.type == "task",
+            ItemRecord.parent_id == lab_item.id
+        )
+    )
+    task_ids = [t.id for t in tasks.scalars().all()]
+    
+    if not task_ids:
+        return []
+    
+    # Join с Learner для получения группы
+    result = await session.execute(
+        select(
+            Learner.student_group,
+            func.round(func.avg(InteractionLog.score), 1).label("avg_score"),
+            func.count(func.distinct(Learner.id)).label("students")
+        )
+        .join(InteractionLog, InteractionLog.learner_id == Learner.id)
+        .where(
+            InteractionLog.item_id.in_(task_ids),
+            InteractionLog.score.isnot(None)
+        )
+        .group_by(Learner.student_group)
+        .order_by(Learner.student_group)
+    )
+    
+    return [
+        {"group": group, "avg_score": float(avg), "students": students}
+        for group, avg, students in result.all()
+    ]
