@@ -129,37 +129,6 @@ function App() {
       )}
     </div>
   )
-
-  return (
-    <div className="App">
-      <header className="app-header">
-        <h1>Learning Analytics</h1>
-        <nav>
-          <button 
-            onClick={() => setCurrentPage('items')}
-            className={currentPage === 'items' ? 'active' : ''}
-          >
-            Items
-          </button>
-          <button 
-            onClick={() => setCurrentPage('dashboard')}
-            className={currentPage === 'dashboard' ? 'active' : ''}
-          >
-            Dashboard
-          </button>
-        </nav>
-      </header>
-      
-      <main>
-        {currentPage === 'items' ? (
-          <Items />
-        ) : (
-          <Dashboard apiKey={apiKey} />
-        )}
-      </main>
-    </div>
-  );
-
 }
 
 export default App
