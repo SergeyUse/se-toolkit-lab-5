@@ -1,6 +1,9 @@
 import { useState, useEffect, useReducer, FormEvent } from 'react'
 import './App.css'
 
+import Items from './Items';
+import Dashboard from './Dashboard';
+
 const STORAGE_KEY = 'api_key'
 
 interface Item {
@@ -38,6 +41,9 @@ function App() {
   )
   const [draft, setDraft] = useState('')
   const [fetchState, dispatch] = useReducer(fetchReducer, { status: 'idle' })
+  
+  const [currentPage, setCurrentPage] = useState<'items' | 'dashboard'>('items');
+  const apiKey = localStorage.getItem('api_key') || '';
 
   useEffect(() => {
     if (!token) return
