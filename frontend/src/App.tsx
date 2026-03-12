@@ -1,7 +1,5 @@
 import { useState, useEffect, useReducer, FormEvent } from 'react'
 import './App.css'
-import Items from './Items';
-import Dashboard from './Dashboard';
 
 const STORAGE_KEY = 'api_key'
 
@@ -40,8 +38,6 @@ function App() {
   )
   const [draft, setDraft] = useState('')
   const [fetchState, dispatch] = useReducer(fetchReducer, { status: 'idle' })
-  const [currentPage, setCurrentPage] = useState<'items' | 'dashboard'>('items');
-  const apiKey = localStorage.getItem('api_key') || '';
 
   useEffect(() => {
     if (!token) return
@@ -127,37 +123,6 @@ function App() {
       )}
     </div>
   )
-
-  return (
-    <div className="App">
-      <header className="app-header">
-        <h1>Learning Analytics</h1>
-        <nav>
-          <button 
-            onClick={() => setCurrentPage('items')}
-            className={currentPage === 'items' ? 'active' : ''}
-          >
-            Items
-          </button>
-          <button 
-            onClick={() => setCurrentPage('dashboard')}
-            className={currentPage === 'dashboard' ? 'active' : ''}
-          >
-            Dashboard
-          </button>
-        </nav>
-      </header>
-      
-      <main>
-        {currentPage === 'items' ? (
-          <Items />
-        ) : (
-          <Dashboard apiKey={apiKey} />
-        )}
-      </main>
-    </div>
-  );
-
 }
 
 export default App
